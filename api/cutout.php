@@ -51,30 +51,66 @@ function av_http_context(): mixed {
   ]);
 }
 
+function av_debug_enabled(): bool {
+  if (isset($_GET['debug']) || isset($_POST['debug'])) {
+    return true;
+  }
+  $env = getenv('AV_DEBUG');
+  if ($env !== false && in_array(strtolower($env), ['1', 'true', 'yes'], true)) {
+    return true;
+  }
+  return false;
+}
+
 function wikipedia_image_url(string $sci): ?string {
   $ctx = av_http_context();
   $wpUrl = 'https://en.wikipedia.org/api/rest_v1/page/summary/' . rawurlencode($sci);
   $wpJson = @file_get_contents($wpUrl, false, $ctx);
 
   if ($wpJson === false) {
+    if (av_debug_enabled()) {
+      $hdrs = isset($http_response_header) ? implode("\n", $http_response_header) : '(no headers)';
+      error_log("wikipedia summary fetch failed for {$sci}; url: {$wpUrl}; headers: {$hdrs}");
+    } else {
+      error_log("wikipedia summary fetch failed for {$sci}; url: {$wpUrl}");
+    }
     return null;
   }
 
   $j = json_decode($wpJson, true);
 
   if (!is_array($j)) {
+    if (av_debug_enabled()) {
+      $err = json_last_error_msg();
+      $snippet = substr((string)$wpJson, 0, 1024);
+      error_log("wikipedia summary JSON decode failed for {$sci}: {$err}; payload: {$snippet}");
+    } else {
+      error_log("wikipedia summary JSON decode failed for {$sci}: " . json_last_error_msg());
+    }
     return null;
   }
 
   $srcUrl = $j['originalimage']['source'] ?? $j['thumbnail']['source'] ?? null;
 
   if (!$srcUrl) {
+    if (av_debug_enabled()) {
+      $keys = implode(',', array_keys($j));
+      $snippet = substr((string)$wpJson, 0, 1024);
+      error_log("wikipedia summary has no image for {$sci}; keys: {$keys}; payload: {$snippet}");
+    } else {
+      error_log("wikipedia summary has no image for {$sci}");
+    }
     return null;
   }
 
   $host = parse_url((string)$srcUrl, PHP_URL_HOST) ?: '';
 
   if (!preg_match('/(?:^|\.)(?:wikimedia\.org|wikipedia\.org)$/i', $host)) {
+    if (av_debug_enabled()) {
+      error_log("wikipedia image host not allowed for {$sci}: {$host}; url: {$srcUrl}");
+    } else {
+      error_log("wikipedia image host not allowed for {$sci}: {$host}");
+    }
     return null;
   }
 
@@ -155,7 +191,13 @@ function serve_wikipedia_photo(string $sci): void {
   if (!$srcUrl) {
     http_response_code(404);
     header('Content-Type: text/plain; charset=utf-8');
-    echo 'no Wikipedia photo for ' . htmlspecialchars($sci, ENT_QUOTES, 'UTF-8');
+    $msg = 'no Wikipedia photo for ' . htmlspecialchars($sci, ENT_QUOTES, 'UTF-8');
+    error_log("no Wikipedia photo for {$sci}");
+    if (av_debug_enabled()) {
+      echo $msg . " (debug: see error log)";
+    } else {
+      echo $msg;
+    }
     exit;
   }
 
@@ -163,9 +205,17 @@ function serve_wikipedia_photo(string $sci): void {
   $imgBytes = @file_get_contents($srcUrl, false, $ctx);
 
   if (!$imgBytes || strlen($imgBytes) < 1024) {
+    $hdrs = isset($http_response_header) ? implode("\n", $http_response_header) : '(no headers)';
+    $len = $imgBytes === false ? 'false' : (string)strlen($imgBytes);
+    $logMsg = "failed to fetch Wikipedia photo for {$sci} from {$srcUrl}; bytes={$len}; headers={$hdrs}";
+    error_log($logMsg);
     http_response_code(503);
     header('Content-Type: text/plain; charset=utf-8');
-    echo 'failed to fetch Wikipedia photo';
+    if (av_debug_enabled()) {
+      echo $logMsg;
+    } else {
+      echo 'failed to fetch Wikipedia photo';
+    }
     exit;
   }
 
