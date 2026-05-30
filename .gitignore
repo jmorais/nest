@@ -1,0 +1,72 @@
+# .gitignore — AvianVisitors
+# Generated / common runtime files to ignore
+
+# macOS
+.DS_Store
+Icon\r
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+env/
+ENV/
+pip-wheel-metadata/
+*.egg-info/
+dist/
+build/
+.eggs/
+.python-version
+
+# Virtualenvs
+.venv/
+
+# IDEs / editors
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*~
+
+# Environment / secrets
+.env
+.env.*
+local.env
+*.secret
+
+# PHP
+vendor/
+
+# Gemini batch files (script outputs)
+gemini-image-batch.jsonl
+gemini-image-batch-results.jsonl
+scripts/gemini-image-batch.jsonl
+api/gemini-image-batch-results.jsonl
+
+# Database / local runtime artifacts
+*.sqlite
+*.db
+*.sqlite3
+
+# Uncomment to ignore generated illustrations if you don't want to commit them
+# assets/illustrations/
+# assets/illustrations-small/
