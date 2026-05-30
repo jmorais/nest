@@ -159,31 +159,42 @@
   // tracks the relative call ratio, and total area can never exceed
   // what the iterative shrink loop is willing to scale into the
   // viewport.
-  function tuning(n) {
+  function tuning(n, W, H) {
+    var viewportAR = W / Math.max(1, H);
+    var portrait = viewportAR < 0.82;
+
+    var baseBudget =
+      n <= 4  ? 1.56 :
+      n <= 12 ? 1.40 :
+      n <= 24 ? 1.20 :
+                1.04;
+
+    var baseMinArea =
+      n <= 8  ? 0.0100 :
+      n <= 20 ? 0.0075 :
+                0.0055;
+
     return {
-      // Soft area budget the whole cluster aims to fill, as a
-      // fraction of viewport area. Lower = sparser collage with more
-      // breathing room (and more headroom for packing efficiency).
-      // Steps down as species count grows so a busy plate doesn't
-      // try to claim the entire viewport.
-      packingBudgetFrac: n <= 4  ? 1.56 :
-                        n <= 12 ? 1.40 :
-                        n <= 24 ? 1.20 :
-                                  1.04,
-      // Count -> area exponent. ~0.65 keeps the visual hierarchy
-      // legible (n=400 reads ~5× bigger than n=30) without the
-      // loudest bird drowning everything else.
-      countExp: 0.65,
-      // Floor: every species in the dataset must be visible, even
-      // n=1. Tracks species count so a tiny rare bird stays
-      // recognisable on a crowded plate.
-      minTileAreaFrac: n <= 8 ? 0.0100 :
-                        n <= 20 ? 0.0075 :
-                                  0.0055,
-      // Wider clusters for landscape viewports, more so as n grows.
-      ellipseAspectBias: 2.1,
+      packingBudgetFrac: baseBudget * (portrait ? 1.18 : 1),
+
+      countExp: portrait ? 0.45 : 0.55, // area-from-count exponent; sublinear so big birds don't dwarf small ones
+
+      minTileAreaFrac: baseMinArea * (portrait ? 1.05 : 1),
+
+      // Desktop keeps the original wide poster composition.
+      // Portrait deliberately becomes taller than wide.
+      ellipseAspectBias: portrait ? 0.78 : 2.1,
+
+      // Used by the portrait cost function to make vertical movement cheaper.
+      verticalCostBias: portrait ? 0.58 : 1,
+
+      // Extra portrait-only shaping.
+      portrait: portrait,
+      portraitXBias: 0.84,
+      portraitYBias: 1.52
     };
   }
+
   var GRID_STRIDE = 4; // viewport px per occupancy cell; smaller = slower
 
   // Decode and cache each mask once. Sparse cell-list form (only "on"
@@ -216,7 +227,10 @@
 
   // Mask-aware nester. tiles: { fullW, fullH, mask, data }. Returns the
   // same tiles with .x, .y assigned (top-left in viewport coords).
-  function maskPack(tiles, W, H, ellipseBias) {
+  function maskPack(tiles, W, H, T) {
+    var ellipseBias = T.ellipseAspectBias;
+    var portrait = !!T.portrait;
+
     var GW = Math.ceil(W / GRID_STRIDE) + 2;
     var GH = Math.ceil(H / GRID_STRIDE) + 2;
     var grid = new Uint8Array(GW * GH);
@@ -230,10 +244,13 @@
       var y0 = (ty + c[1] * sy) / GRID_STRIDE | 0;
       var x1 = (tx + (c[0] + 1) * sx) / GRID_STRIDE | 0;
       var y1 = (ty + (c[1] + 1) * sy) / GRID_STRIDE | 0;
-      if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
-      if (x1 >= GW) x1 = GW - 1; if (y1 >= GH) y1 = GH - 1;
+      if (x0 < 0) x0 = 0;
+      if (y0 < 0) y0 = 0;
+      if (x1 >= GW) x1 = GW - 1;
+      if (y1 >= GH) y1 = GH - 1;
       return [x0, y0, x1, y1];
     }
+
     function collides(tile, tx, ty) {
       var cells = tile.mask.cells;
       for (var i = 0; i < cells.length; i++) {
@@ -247,87 +264,187 @@
       }
       return false;
     }
+
     function stamp(tile, tx, ty) {
       var cells = tile.mask.cells;
       for (var i = 0; i < cells.length; i++) {
         var r = cellRange(tile, tx, ty, cells[i]);
         for (var gy = r[1]; gy <= r[3]; gy++) {
           var off = gy * GW;
-          for (var gx = r[0]; gx <= r[2]; gx++) grid[off + gx] = 1;
+          for (var gx = r[0]; gx <= r[2]; gx++) {
+            grid[off + gx] = 1;
+          }
         }
       }
     }
+
     function offGrid(tile, tx, ty) {
       // True if the rendered tile bbox extends past the viewport.
       return tx < 0 || ty < 0 || tx + tile.fullW > W || ty + tile.fullH > H;
     }
 
-    var cx = W / 2, cy = H / 2;
+    var cx = W / 2;
+    var cy = H / 2;
+
     // Largest first so the cluster grows around the anchor.
-    tiles.sort(function (a, b) { return (b.fullW * b.fullH) - (a.fullW * a.fullH); });
+    tiles.sort(function (a, b) {
+      return (b.fullW * b.fullH) - (a.fullW * a.fullH);
+    });
+
     var placed = [];
     // Seeded PRNG keeps the layout stable across resizes.
     var seed = 0x9E3779B9;
-    function rand() { seed = (seed * 16807) % 2147483647; return seed / 2147483647; }
+    function rand() {
+      seed = (seed * 16807) % 2147483647;
+      return seed / 2147483647;
+    }
+
+    // Portrait target lanes make the plate grow up/down, not just outward
+    // from a single center medallion.
+    var portraitLanes = [
+      { x: 0.50, y: 0.50 },
+      { x: 0.50, y: 0.32 },
+      { x: 0.50, y: 0.68 },
+
+      { x: 0.36, y: 0.42 },
+      { x: 0.64, y: 0.58 },
+      { x: 0.36, y: 0.60 },
+      { x: 0.64, y: 0.40 },
+
+      { x: 0.28, y: 0.50 },
+      { x: 0.72, y: 0.50 },
+
+      { x: 0.50, y: 0.22 },
+      { x: 0.50, y: 0.78 }
+    ];
 
     for (var i = 0; i < tiles.length; i++) {
       var t = tiles[i];
-      var tx, ty;
+      var tx;
+      var ty;
+
       if (i === 0) {
         tx = cx - t.fullW / 2;
         ty = cy - t.fullH / 2;
-        t.x = tx; t.y = ty;
+        t.x = tx;
+        t.y = ty;
         stamp(t, tx, ty);
         placed.push(t);
         continue;
       }
+
       // Spiral outward. Stop the first ring that yields any non-colliding
       // position - that ring is the tightest possible distance from
       // centre. Within the ring, pick the position closest to the centre
       // of mass of already-placed tiles (so cluster grows organically,
-      // not in fixed directions).
-      var comX = 0, comY = 0, comW = 0;
+      // not in fixed directions). On portrait/mobile this is modified
+      // by target lanes and a vertical cost function so the result uses
+      // more height.
+      var comX = 0;
+      var comY = 0;
+      var comW = 0;
+
       placed.forEach(function (p) {
+        if (p.x < -1000) return;
         var a = p.fullW * p.fullH;
         comX += (p.x + p.fullW / 2) * a;
         comY += (p.y + p.fullH / 2) * a;
         comW += a;
       });
-      comX /= comW; comY /= comW;
 
-      var best = null, bestCost = Infinity;
-      var step = Math.max(GRID_STRIDE, Math.min(t.fullW, t.fullH) * 0.05);
-      var maxR = Math.max(W, H);
+      if (comW > 0) {
+        comX /= comW;
+        comY /= comW;
+      } else {
+        comX = cx;
+        comY = cy;
+      }
+
+      var lane = portraitLanes[i % portraitLanes.length];
+      var anchorX = portrait ? W * lane.x : cx;
+      var anchorY = portrait ? H * lane.y : cy;
+
+      var best = null;
+      var bestCost = Infinity;
+      var step = Math.max(GRID_STRIDE, Math.min(t.fullW, t.fullH) * 0.045);
+
+      var xBias = portrait ? T.portraitXBias : ellipseBias;
+      var yBias = portrait ? T.portraitYBias : 1;
+
+      var maxR = Math.max(
+        W / Math.max(0.35, xBias),
+        H / Math.max(0.35, yBias)
+      );
+
       var foundRing = -1;
       var phase = rand() * Math.PI * 2;
+
       for (var r = 0; r <= maxR; r += step) {
-        if (foundRing >= 0 && r > foundRing + step * 2) break;
-        var samples = Math.max(36, Math.floor(r / 1.6));
+        if (foundRing >= 0 && r > foundRing + step * 3) break;
+
+        var samples = Math.max(52, Math.floor(r / 1.15));
+
         for (var k = 0; k < samples; k++) {
           var theta = phase + (k / samples) * Math.PI * 2;
-          // Elliptical ring - x stretched.
-          var px = cx + r * ellipseBias * Math.cos(theta) - t.fullW / 2;
-          var py = cy + r * Math.sin(theta) - t.fullH / 2;
+
+          var px = anchorX + r * xBias * Math.cos(theta) - t.fullW / 2;
+          var py = anchorY + r * yBias * Math.sin(theta) - t.fullH / 2;
+
           if (offGrid(t, px, py)) continue;
           if (collides(t, px, py)) continue;
-          // Distance to existing cluster centre of mass + small noise.
-          var dxx = (px + t.fullW / 2 - comX);
-          var dyy = (py + t.fullH / 2 - comY);
-          var cost = Math.hypot(dxx / ellipseBias, dyy) + rand() * step * 0.5;
-          if (cost < bestCost) { bestCost = cost; best = { x: px, y: py }; }
+
+          var mx = px + t.fullW / 2;
+          var my = py + t.fullH / 2;
+
+          var dxx = mx - comX;
+          var dyy = my - comY;
+
+          var centerX = (mx - cx) / Math.max(1, W * 0.44);
+          var centerY = (my - cy) / Math.max(1, H * 0.44);
+
+          var anchorDX = (mx - anchorX) / Math.max(1, W * 0.38);
+          var anchorDY = (my - anchorY) / Math.max(1, H * 0.38);
+
+          var targetShapeCost = portrait
+            ? Math.abs(centerX) * 34 + Math.abs(centerY) * 12
+            : Math.abs(centerX) * 12 + Math.abs(centerY) * 18;
+
+          var anchorCost = portrait
+            ? Math.hypot(anchorDX * 18, anchorDY * 10)
+            : 0;
+
+          var comCost = portrait
+            ? Math.hypot(dxx * 0.48, dyy * 0.34)
+            : Math.hypot(dxx / ellipseBias, dyy);
+
+          var edgeCost = portrait
+            ? Math.max(0, Math.abs(centerX) - 0.84) * 85
+            : 0;
+
+          var cost = comCost + targetShapeCost + anchorCost + edgeCost + rand() * step * 0.5;
+
+          if (cost < bestCost) {
+            bestCost = cost;
+            best = { x: px, y: py };
+          }
         }
+
         if (best && foundRing < 0) foundRing = r;
       }
+
       if (best) {
-        t.x = best.x; t.y = best.y;
+        t.x = best.x;
+        t.y = best.y;
         stamp(t, best.x, best.y);
         placed.push(t);
       } else {
         // Couldn't fit anywhere - hide off-screen rather than overlap.
-        t.x = -99999; t.y = -99999;
+        t.x = -99999;
+        t.y = -99999;
         placed.push(t);
       }
     }
+
     return placed;
   }
 
@@ -337,14 +454,22 @@
       collage.innerHTML = '<p class="empty">no birds heard in this window.</p>';
       return;
     }
-    var W = collage.clientWidth, H = collage.clientHeight;
-    if (!W || !H) { setTimeout(function () { renderCollage(items); }, 80); return; }
+    var W = collage.clientWidth;
+    var H = collage.clientHeight;
+    if (!W || !H) {
+      setTimeout(function () {
+        renderCollage(items);
+      }, 80);
+      return;
+    }
 
-    // Tuning depends on bird count - same viewport, very different
-    // pack densities for 6 vs 48 birds.
-    var T = tuning(items.length);
+    // Tuning depends on bird count and viewport aspect ratio - same
+    // viewport, very different pack densities for 6 vs 48 birds. On
+    // portrait/mobile it switches from a wide poster layout to a taller
+    // specimen plate.
+    var T = tuning(items.length, W, H);
     var vpArea = W * H;
-    var budget  = vpArea * T.packingBudgetFrac;
+    var budget = vpArea * T.packingBudgetFrac;
     var minArea = vpArea * T.minTileAreaFrac;
 
     // Step 1: build tiles + assign each a count-weighted SCORE (not a
@@ -355,49 +480,67 @@
       var slug = slugify(s.sci);
       var mask = loadMask(slug);
       if (!mask) return null;
-      var n = +s.n; if (!n || isNaN(n)) n = 1;
+      var n = +s.n;
+      if (!n || isNaN(n)) n = 1;
       return {
-        mask: mask, data: s,
+        mask: mask,
+        data: s,
         ar: aspect(s.sci),
-        score: Math.pow(Math.max(1, n), T.countExp),
+        score: Math.pow(Math.max(1, n), T.countExp)
       };
     }).filter(Boolean);
 
     // Step 2: normalise so sum(area) ≈ budget. Then floor each tile
     // at minArea so even a 1-call bird stays legible.
-    var sumScore = tiles.reduce(function (a, t) { return a + t.score; }, 0) || 1;
+    var sumScore = tiles.reduce(function (a, t) {
+      return a + t.score;
+    }, 0) || 1;
+
     tiles.forEach(function (t) {
       t.area = Math.max(minArea, budget * t.score / sumScore);
     });
+
     // After flooring, total may exceed budget; squeeze the over-budget
     // remainder out of the LARGER tiles (the ones above minArea) so
     // the floor on rare birds stays intact.
-    var sumA = tiles.reduce(function (a, t) { return a + t.area; }, 0);
+    var sumA = tiles.reduce(function (a, t) {
+      return a + t.area;
+    }, 0);
+
     if (sumA > budget) {
-      var fixedSum = tiles.filter(function (t) { return t.area <= minArea + 1e-9; })
-        .reduce(function (a, t) { return a + t.area; }, 0);
-      var flexSum  = sumA - fixedSum;
+      var fixedSum = tiles.filter(function (t) {
+        return t.area <= minArea + 1e-9;
+      }).reduce(function (a, t) {
+        return a + t.area;
+      }, 0);
+
+      var flexSum = sumA - fixedSum;
       var flexBudget = Math.max(0, budget - fixedSum);
       var shrink = flexSum > 0 ? Math.min(1, flexBudget / flexSum) : 1;
+
       tiles.forEach(function (t) {
         if (t.area > minArea + 1e-9) t.area *= shrink;
       });
     }
+
     // Step 3: derive width/height from area + per-species aspect.
     tiles.forEach(function (t) {
       t.fullW = Math.sqrt(t.area * t.ar);
       t.fullH = t.fullW / t.ar;
     });
 
-    var placed = maskPack(tiles, W, H, T.ellipseAspectBias);
+    var placed = maskPack(tiles, W, H, T);
 
     // Scale-to-fit: iterate shrink + repack until every tile lands on
     // screen. The old single-pass version dropped birds when one pass
-    // wasn't enough (narrow viewports + many species). Capped at 10
-    // iterations - by then the linear scale is ~0.5 of original, more
-    // than enough headroom for any viewport.
+    // wasn't enough (narrow viewports + many species). Capped at 12
+    // iterations - by then the linear scale is plenty small enough for
+    // any viewport.
     function clusterBounds(arr) {
-      var L = Infinity, R = -Infinity, T2 = Infinity, B = -Infinity;
+      var L = Infinity;
+      var R = -Infinity;
+      var T2 = Infinity;
+      var B = -Infinity;
       arr.forEach(function (t) {
         if (t.x < -1000) return;
         if (t.x < L) L = t.x;
@@ -407,22 +550,35 @@
       });
       return { L: L, R: R, T: T2, B: B };
     }
+
     var b = clusterBounds(placed);
-    for (var iter = 0; iter < 10; iter++) {
-      var missing  = placed.some(function (t) { return t.x < -1000; });
+    for (var iter = 0; iter < 12; iter++) {
+      var missing = placed.some(function (t) {
+        return t.x < -1000;
+      });
+
       var overflow = b.L < 0 || b.T < 0 || b.R > W || b.B > H;
+
       if (!missing && !overflow) break;
+
       // Base 0.93 linear shrink (≈ 0.86 area). If overflow, take the
       // tighter of cluster-to-viewport ratios so we converge fast.
       var scale = 0.93;
+
       if (overflow) {
-        var clW = b.R - b.L, clH = b.B - b.T;
+        var clW = b.R - b.L;
+        var clH = b.B - b.T;
         var sx = (W * 0.96) / Math.max(clW, W * 0.96);
-        var sy = (H * 0.94) / Math.max(clH, H * 0.94);
+        var sy = (H * 0.97) / Math.max(clH, H * 0.97);
         scale = Math.min(scale, sx, sy);
       }
-      tiles.forEach(function (t) { t.fullW *= scale; t.fullH *= scale; });
-      placed = maskPack(tiles, W, H, T.ellipseAspectBias);
+
+      tiles.forEach(function (t) {
+        t.fullW *= scale;
+        t.fullH *= scale;
+      });
+
+      placed = maskPack(tiles, W, H, T);
       b = clusterBounds(placed);
     }
 
@@ -431,7 +587,12 @@
     var dx = W / 2 - (b.L + b.R) / 2;
     var dy = H / 2 - (b.T + b.B) / 2;
     if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-      placed.forEach(function (t) { if (t.x > -1000) { t.x += dx; t.y += dy; } });
+      placed.forEach(function (t) {
+        if (t.x > -1000) {
+          t.x += dx;
+          t.y += dy;
+        }
+      });
     }
 
     placed.forEach(function (r) {
@@ -454,14 +615,15 @@
       var titleN = +s.n || 0;
       btn.title = (s.com || s.sci) + ' · ' + fmtN(titleN) + ' ' +
         (titleN === 1 ? 'call' : 'calls') + ' ' + windowLabel(currentHours);
-      btn.style.left   = r.x + 'px';
-      btn.style.top    = r.y + 'px';
-      btn.style.width  = r.fullW + 'px';
+      btn.style.left = r.x + 'px';
+      btn.style.top = r.y + 'px';
+      btn.style.width = r.fullW + 'px';
       btn.style.height = r.fullH + 'px';
       btn.innerHTML = '<img loading="lazy" decoding="async" src="' + img + '" alt="' + s.com + '">';
       r.el = btn;
       collage.appendChild(btn);
     });
+
     // Hover pill - created once per render so collage.innerHTML='' at
     // the top of this function doesn't strand a stale node. mousemove
     // populates its text from hit.data so the count is whatever the
@@ -473,7 +635,9 @@
     collage.appendChild(tip);
     // Stash the placed tiles so the alpha-mask hit-tester (below) can
     // resolve which silhouette the cursor is actually over.
-    collagePlaced = placed.filter(function (t) { return t.x > -1000; });
+    collagePlaced = placed.filter(function (t) {
+      return t.x > -1000;
+    });
   }
 
   // ---- Alpha-mask hover/click hit-testing ----
