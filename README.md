@@ -55,9 +55,9 @@ GEMINI_API_KEY="sk-..."
 EBIRD_API_KEY="your_ebird_token"
 ```
 
-## Notes & deployment tips
-- For forwarded/public deployments: set `AV_REQUIRE_AUTH=1` and protect `/avian/api/` with Caddy `basic_auth` or an equivalent reverse-proxy authentication.
-- Place server-side env vars where your PHP-FPM / Caddy process inherits them (systemd unit, `/etc/environment`, or pool configuration), not in the webroot.
+-## Notes & deployment tips
+- For forwarded/public deployments: set `AV_REQUIRE_AUTH=1` and protect `/avian/api/` with basic auth at your front proxy.
+- Place server-side env vars where your PHP-FPM process inherits them (systemd unit, `/etc/environment`, or pool configuration), not in the webroot.
 - Keep API keys out of repository history — prefer system-level secrets or a vault.
 - Image-generation scripts require `GEMINI_API_KEY` to run; the web API itself does not need it unless you run the pregen scripts.
 

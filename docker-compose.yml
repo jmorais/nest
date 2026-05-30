@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: avian-app
+    volumes:
+      - ./:/var/www/html:delegated
+    environment:
+      AV_REQUIRE_AUTH: "${AV_REQUIRE_AUTH:-0}"
+      AV_USER_AGENT: "${AV_USER_AGENT:-AvianVisitors/1.0}"
+      BIRDNET_GO_URL: "${BIRDNET_GO_URL:-https://birds.cellar.home}"
+      BIRDNET_GO_USER: "${BIRDNET_GO_USER:-}"
+      BIRDNET_GO_PASS: "${BIRDNET_GO_PASS:-}"
+    ports:
+      - "8080:8080"
+    command: ["php", "-S", "0.0.0.0:8080", "-t", "/var/www/html"]
+    restart: unless-stopped
+
+  # Optional helper container for running the pregen scripts (one-off)
+  pregen:
+    image: python:3.10-slim
+    container_name: avian-pregen
+    working_dir: /usr/src/app
+    volumes:
+      - ./:/usr/src/app:delegated
+    environment:
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      EBIRD_API_KEY: "${EBIRD_API_KEY:-}"
+    command: ["bash", "-c", "pip install --no-cache-dir -r scripts/requirements.txt || true; tail -f /dev/null"]
+    restart: "no"
