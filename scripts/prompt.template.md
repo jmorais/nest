@@ -6,4 +6,4 @@ Anatomy must be biologically accurate for the named species:
 - Posture, color, markings, and body proportions matching {com_name} ({sci_name}) field-guide references.
 - For perched poses: one wing folded against the body, the other tucked behind. For flight: both wings extended in a natural flapping position.
 
-Render at high resolution on a fully bright white background. Cut the bird out cleanly. No shadow, no paper texture, no caption.
+Render at high resolution on a fully bright magenta background. Cut the bird out cleanly. No shadow, no paper texture, no caption.
