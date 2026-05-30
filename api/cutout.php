@@ -10,6 +10,10 @@
 //   AV_USER_AGENT - optional User-Agent for Wikipedia requests
 
 declare(strict_types=1);
+// Allow increasing PHP memory for large images via AV_MEMORY_LIMIT env (default 512M).
+$__av_memory_limit = getenv('AV_MEMORY_LIMIT') ?: '512M';
+@ini_set('memory_limit', $__av_memory_limit);
+if (getenv('AV_DEBUG')) { error_log("AV memory_limit set to {$__av_memory_limit}"); }
 
 $sci = trim((string)($_GET['sci'] ?? ''));
 
@@ -60,6 +64,30 @@ function av_debug_enabled(): bool {
     return true;
   }
   return false;
+}
+
+function av_parse_bytes(string $val): int {
+  $val = trim($val);
+  if ($val === '') return 0;
+  if ($val === '-1') return -1;
+  $unit = strtolower($val[strlen($val) - 1]);
+  if (is_numeric($unit)) {
+    return (int)$val;
+  }
+  $num = (float) substr($val, 0, -1);
+  return match ($unit) {
+    'g' => (int)($num * 1024 * 1024 * 1024),
+    'm' => (int)($num * 1024 * 1024),
+    'k' => (int)($num * 1024),
+    default => (int)$num,
+  };
+}
+
+function av_estimated_image_memory(int $w, int $h, int $channels = 4): int {
+  $bytes = $w * $h * $channels;
+  // Heuristic multiplier for GD overhead
+  $bytes = (int)($bytes * 1.7) + 65536;
+  return $bytes;
 }
 
 function wikipedia_image_url(string $sci): ?string {
@@ -147,6 +175,27 @@ function save_wikipedia_pose3(string $sci, string $imgBytes): ?string {
 
   if (is_file($target) && filesize($target) > 1024) {
     return $target;
+  }
+
+  // Check image dimensions and estimated GD memory needs before creating the image
+  $size = @getimagesizefromstring($imgBytes);
+  if ($size !== false && isset($size[0], $size[1])) {
+    $w = (int)$size[0];
+    $h = (int)$size[1];
+    $needed = av_estimated_image_memory($w, $h, 4);
+    $memLimit = ini_get('memory_limit');
+    $limitBytes = av_parse_bytes((string)$memLimit);
+    $current = memory_get_usage();
+    $available = ($limitBytes === -1) ? PHP_INT_MAX : max(0, $limitBytes - $current);
+
+    if ($available < $needed) {
+      $msg = "insufficient memory to process wikipedia image for {$sci}: {$w}x{$h}; need={$needed}; available={$available}; memory_limit={$memLimit}; usage={$current}";
+      error_log($msg);
+      if (av_debug_enabled()) {
+        error_log('raw image bytes length: ' . strlen($imgBytes));
+      }
+      return null;
+    }
   }
 
   $im = @imagecreatefromstring($imgBytes);
